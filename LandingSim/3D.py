@@ -8,17 +8,41 @@ from pygame.locals import *
 from OpenGL.GL import *
 from OpenGL.GLU import *
 
+def NameToCoords(name):
+    a, b = name.split("_")
+    return a, b
+
+def CoordsToName(a, b):
+    return str(a)+"_"+str(b)
+
+class Planet:
+    def __init__(self, radius_render=1, longitude=0, latitude=0, radius=7, details=32):
+        self.radius_render = radius_render
+        self.longitude = longitude 
+        self.latitude = latitude
+        self.radius = radius
+        self.details = details
+        self.sectors = []
+        for i in range((radius_render-1)*2+1):
+            self.sectors.append([])
+            longi = longitude + i - (radius_render-1)
+            for j in range((radius_render-1)*2+1):
+                latj = latitude + j - (radius_render-1)
+                nameij = CoordsToName(longi, latj)
+                self.sectors[i].append(SphereSector(radius, math.radians(longi), math.radians(latj), longi, latj, details))
+
 class SphereSector:
-    def __init__(self, radius=5.0, longitude=0, latitude=0, 
-                 scale_lon=math.pi/12, scale_lat=math.pi/12, details=64,
-                 planetName="Unnamed Planet"):
+    def __init__(self, radius=7.0, longitude=0, latitude=0, deg_longitude=0, deg_latitude=0, details=32):
         self.radius = radius
         self.longitude = longitude
         self.latitude = latitude
-        self.planetName = planetName
-        self.scale_lon = scale_lon
-        self.scale_lat = scale_lat
+        self.deg_longitude = deg_longitude
+        self.deg_latitude = deg_latitude
+        self.scale_lon = math.pi/180
+        self.scale_lat = math.pi/180
         self.details = details
+        self.sectorName = CoordsToName(deg_longitude, deg_latitude)
+        self.color = 0.9 + 0.05*math.pow(-1, self.deg_longitude + self.deg_latitude)
         
         self.min_lat = self.latitude - self.scale_lat/2
         self.max_lat = self.latitude + self.scale_lat/2
@@ -73,7 +97,7 @@ class SphereSector:
         return indices
     
     def get_vertices_and_normals(self):
-        cache_key = f"{self.planetName}_sector_{self.min_lat}_{self.max_lat}_{self.min_lon}_{self.max_lon}"
+        cache_key = CoordsToName(self.deg_longitude, self.deg_latitude)
         
         if cache_key in self._vertices_cache:
             return self._vertices_cache[cache_key], self._normals_cache[cache_key]
@@ -136,7 +160,7 @@ class SphereSector:
         indices = self.generate_indices()
         
         glDisable(GL_LIGHTING)
-        glColor3f(0.8, 0.9, 1.0)
+        glColor3f(self.color, self.color, self.color)
         
         glBegin(GL_LINES)
         for i in range(0, len(indices), 3):
@@ -180,11 +204,11 @@ class SphereSector:
     
     def save_to_file(self, filename=None):
         if filename is None:
-            filename = f"{self.planetName}.bin"
+            filename = f"{self.sectorName}.bin"
         data = {
             'radius': self.radius,
             'details': self.details,
-            'planetName': self.planetName,
+            'sectorName': self.sectorName,
             'longitude': self.longitude,
             'latitude': self.latitude,
             'scale_lon': self.scale_lon,
@@ -197,7 +221,7 @@ class SphereSector:
         try:
             with open(filename, 'wb') as f:
                 pickle.dump(data, f)
-            print(f"Сектор '{self.planetName}' сохранен в файл: {filename}")
+            print(f"Сектор '{self.sectorName}' сохранен в файл: {filename}")
             return True
         except Exception as e:
             print(f"Ошибка при сохранении: {e}")
@@ -216,14 +240,14 @@ class SphereSector:
                 scale_lon=data['scale_lon'],
                 scale_lat=data['scale_lat'],
                 details=data['details'],
-                planetName=data['planetName']
+                sectorName=data['sectorName']
             )
             
             sector._vertices_cache = data.get('vertices_cache', {})
             sector._normals_cache = data.get('normals_cache', {})
             sector._indices_cache = data.get('indices_cache', None)
             
-            print(f"Сектор '{sector.planetName}' загружен из файла: {filename}")
+            print(f"Сектор '{sector.sectorName}' загружен из файла: {filename}")
             return sector
             
         except Exception as e:
@@ -235,7 +259,7 @@ class SphereSector:
             'radius': self.radius,
             'longitude': self.longitude,
             'latitude': self.latitude,
-            'planetName': self.planetName,
+            'sectorName': self.sectorName,
             'scale_lat': self.scale_lat,
             'scale_lon': self.scale_lon,
             'details': self.details,
@@ -262,19 +286,18 @@ class Lander:
         self.lat += self.v_lat * dt
         self.heig += self.v_heig * dt
         
-        if self.heig < 0:
+        if self.heig < self.heig_planet:
             self.heig = 0
             self.v_heig = 0
     
-    def update_height(self, heig_pl):
-        self.heig_planet = heig_pl
+    def update_height(self, heig_planet):
+        self.heig_planet = heig_planet
     
-    def get_cartesian_position(self, radius):
-        effective_radius = radius + self.heig
+    def get_cartesian_position(self, heig):
         cos_lat = math.cos(self.lat)
-        x = effective_radius * cos_lat * math.cos(self.lon)
-        y = effective_radius * math.sin(self.lat)
-        z = effective_radius * cos_lat * math.sin(self.lon)
+        x = heig * cos_lat * math.cos(self.lon)
+        y = heig * math.sin(self.lat)
+        z = heig * cos_lat * math.sin(self.lon)
         return (x, y, z)
     
     def draw(self):
@@ -315,11 +338,11 @@ class Lander:
         glEnable(GL_LIGHTING)
 
 class SectorCamera:
-    def __init__(self, sector, lander=None):
-        self.sector = sector
+    def __init__(self, planet, lander=None):
+        self.planet = planet
         self.lander = lander
         self.follow_lander = False
-        self.distance = 8.0
+        self.distance = 2.0
         self.min_distance = 0.2
         self.max_distance = 30.0
         self.rotation_x = 0
@@ -339,40 +362,27 @@ class SectorCamera:
         gluPerspective(45, 800/600, 0.1, 100.0)
         
         if self.follow_lander and self.lander and self.lander.exists:
-            x, y, z = self.lander.get_cartesian_position(self.sector.radius)
+            glTranslatef(0.0, 0.0, -self.distance)
             
-            camera_distance = 3.0
-            camera_height = 1.0
-            
-            normal_x = math.cos(self.lander.lat) * math.cos(self.lander.lon)
-            normal_y = math.sin(self.lander.lat)
-            normal_z = math.cos(self.lander.lat) * math.sin(self.lander.lon)
-            
-            camera_x = x - normal_x * camera_distance
-            camera_y = y - normal_y * camera_distance + camera_height
-            camera_z = z - normal_z * camera_distance
-            
-            gluLookAt(
-                camera_x, camera_y, camera_z,  # Позиция камеры
-                x, y, z,                       # Точка, на которую смотрим
-                0, 1, 0                        # Вектор "вверх"
-            )
+            glRotatef(self.rotation_x, 1, 0, 0)
+            glRotatef(self.rotation_y, 0, 1, 0)
+            x, y, z = self.lander.get_cartesian_position(self.lander.heig)
+            glTranslatef(-x, -y, -z)
         else:
             glTranslatef(0.0, 0.0, -self.distance)
             
             glRotatef(self.rotation_x, 1, 0, 0)
             glRotatef(self.rotation_y, 0, 1, 0)
-            
-            glTranslatef(-self.sector.center_x, -self.sector.center_y, -self.sector.center_z)
+            sector_center = self.planet.sectors[self.planet.radius_render-1][self.planet.radius_render-1]
+            glTranslatef(-sector_center.center_x, -sector_center.center_y, -sector_center.center_z)
     
     def zoom(self, delta):
         if not self.follow_lander:
             self.distance = max(self.min_distance, min(self.max_distance, self.distance + delta/5))
     
     def rotate(self, delta_x, delta_y):
-        if not self.follow_lander:
-            self.rotation_y += delta_x * 0.5
-            self.rotation_x = max(-90, min(90, self.rotation_x + delta_y * 0.5))
+        self.rotation_y += delta_x * 0.5
+        self.rotation_x = max(-90, min(90, self.rotation_x + delta_y * 0.5))
 
 class WireframeMaterial:
     @staticmethod
@@ -428,20 +438,19 @@ def list_saved_areas():
     return bin_files
 
 def CustomSector():
-    print("\n=== Создание новой области ===")
+    print("\n=== Создание новой планеты ===")
+    Radius_sectors = int(input("Радиус прорисовки: "))
     Long, Lat = map(int, input("Долгота и широта центра: ").split())
-    sc_Lon, sc_Lat = map(int, input("Угловые размеры зоны: ").split())
     Radiu = int(input("Радиус Планеты (средний): "))
     Details = int(input("Детализация: "))
-    areaname = input("Название зоны: ")
     
-    sector = SphereSector(Radiu, math.radians(Long), math.radians(Lat), math.radians(sc_Lon), math.radians(sc_Lat), Details,  planetName=areaname)
+    planet = Planet(Radius_sectors, Long, Lat, Radiu, Details)
     
-    save = input("Сохранить область? (y/n): ").lower().strip()
+    """save = input("Сохранить область? (y/n): ").lower().strip()
     if save == 'y':
-        sector.save_to_file()
+        planet.save_to_file()"""
     
-    return sector
+    return planet
 
 def load_sector_interactive():
     bin_files = list_saved_areas()
@@ -449,9 +458,9 @@ def load_sector_interactive():
         return None
     
     try:
-        choice = int(input("Выберите номер области для загрузки: ")) - 1
+        choice = int(input("Выберите номер планеты для загрузки: ")) - 1
         if 0 <= choice < len(bin_files):
-            return SphereSector.load_from_file(bin_files[choice])
+            return Planet.load_from_file(bin_files[choice])
         else:
             print("Неверный выбор")
             return None
@@ -459,16 +468,38 @@ def load_sector_interactive():
         print("Введите число")
         return None
 
+def update_sectors(planet, delta_lon, delta_lat): 
+    size_sectors = (planet.radius_render-1)*2+1
+    new_sectors = [[None for _ in range(size_sectors)] for _ in range(size_sectors)]
+    for i in range(len(planet.sectors)):
+        for j in range(len(planet.sectors[i])):
+            sector = planet.sectors[i][j]
+            new_i = i - delta_lon
+            new_j = j - delta_lat
+            if 0 <= new_i < size_sectors and 0 <= new_j < size_sectors:
+                new_sectors[new_i][new_j] = sector
+    for i in range(size_sectors):
+        for j in range(size_sectors):
+            if new_sectors[i][j] is None:
+                new_lon = planet.longitude + i - (planet.radius_render - 1)
+                new_lat = planet.latitude + j - (planet.radius_render - 1)
+                
+                new_sectors[i][j] = SphereSector(planet.radius, math.radians(new_lon), math.radians(new_lat), new_lon, new_lat, planet.details)
+    planet.sectors = new_sectors
+    return planet
+
+
+
 def main():
     pygame.init()
     display = (800, 600)
     pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
     pygame.display.set_caption("LandingSim")
     
-    sector = SphereSector(radius=5.0, longitude=0, latitude=0, scale_lon=math.pi/12, scale_lat=math.pi/12, details=64, planetName="Null Area")
+    planet = Planet(3, 0, 0, 7, 8)
     
     lander = None
-    camera = SectorCamera(sector, lander)
+    camera = SectorCamera(planet, lander)
     
     glEnable(GL_DEPTH_TEST)
     glEnable(GL_CULL_FACE)
@@ -480,21 +511,20 @@ def main():
     
     print("=== LandingSim ===")
     print("Управление:")
-    print("1 - Камера к текущей области")
     print("W - переключить Wireframe/Solid режим")
     print("A - показать/скрыть оси координат")
-    print("C - создать новую область")
-    print("L - загрузить сохраненную область")
-    print("S - сохранить текущую область")
+    #print("C - создать новую область")
+    #print("L - загрузить сохраненную область")
+    #print("S - сохранить текущую область")
     print("R - сброс камеры")
-    print("SPACE - создать/удалить лендер")
-    print("F - переключить привязку камеры к лендеру")
+    print("F - создать/удалить лендер")
+    print("SPACE - переключить привязку камеры к лендеру")
     print("Колесо мыши - приближение/отдаление")
-    print("ЛКМ + движение - вращение камеры вокруг сектора")
+    print("ЛКМ + движение - вращение камеры")
     print(f"Текущий режим: {'WIREFRAME' if wireframe_mode else 'SOLID'}")
     
     while True:
-        dt = clock.tick(60) / 1000.0  # Время в секундах с последнего кадра
+        dt = clock.tick(60) / 1000.0
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
@@ -503,15 +533,6 @@ def main():
                 if event.key == pygame.K_ESCAPE:
                     pygame.quit()
                     return
-                elif event.key == pygame.K_1:
-                    camera = SectorCamera(sector, lander)
-                    info = sector.get_sector_info()
-                    print(f"\nТекущая область: {sector.planetName}")
-                    print(f"Широта: {info['lat_range']}")
-                    print(f"Долгота: {info['lon_range']}")
-                    print(f"Центр: ({info['center_lat']:.1f}°, {info['center_lon']:.1f}°)")
-                    print(f"Размер данных: {sector.get_save_data_size()} байт")
-                    print(f"Режим отображения: {'WIREFRAME' if wireframe_mode else 'SOLID'}")
                 elif event.key == pygame.K_w:
                     wireframe_mode = not wireframe_mode
                     mode_name = "WIREFRAME" if wireframe_mode else "SOLID"
@@ -524,34 +545,30 @@ def main():
                     camera.rotation_y = 0
                     camera.distance = 8.0
                 elif event.key == pygame.K_c:
-                    sector = CustomSector()
-                    camera = SectorCamera(sector, lander)
-                elif event.key == pygame.K_l:
-                    loaded_sector = load_sector_interactive()
-                    if loaded_sector:
-                        sector = loaded_sector
-                        camera = SectorCamera(sector, lander)
-                elif event.key == pygame.K_s:
-                    sector.save_to_file()
+                    planet = CustomSector()
+                    camera = SectorCamera(planet, lander)
                 elif event.key == pygame.K_f:
                     if lander and lander.exists:
                         lander.exists = False
                         print("Старый лендер удален")
-
-                    print("\n=== Создание нового лендера ===")
-                    try:
-                        lon, lat, heig = map(float, input("Долгота, широта, высота: ").split())
-                        v_lon, v_lat, v_heig = map(float, input("Скорость по долготе, широте, высоте: ").split())
-                        size = float(input("Размер лендера: "))
+                    asco = input("Default? y/n ")
+                    if asco == 'y':
+                        new_lander = Lander(0, 0, 8, 0.01, 0, 0, 0.1, planet.sectors[0][0].noise_surface(0, 0))
+                    else:
+                        print("\n=== Создание нового лендера ===")
+                        try:
+                            lon, lat, heig = map(float, input("Долгота, широта, высота: ").split())
+                            v_lon, v_lat, v_heig = map(float, input("Скорость по долготе, широте, высоте: ").split())
+                            size = float(input("Размер лендера: "))
         
-                        lon_rad = math.radians(lon)
-                        lat_rad = math.radians(lat)
-                        heig_planet = sector.noise_surface(lon, lat)
+                            lon_rad = math.radians(lon)
+                            lat_rad = math.radians(lat)
+                            heig_planet = planet.sectors[0][0].noise_surface(lon, lat)
         
-                        new_lander = Lander(lon_rad, lat_rad, heig, v_lon, v_lat, v_heig, size, heig_planet)
-                    except ValueError:
-                        print("Ошибка ввода. Используйте числа.")
-                        new_lander = None
+                            new_lander = Lander(lon_rad, lat_rad, heig, v_lon, v_lat, v_heig, size, heig_planet)
+                        except ValueError:
+                            print("Ошибка ввода")
+                            new_lander = None
                     if new_lander != None:
                         lander = new_lander
                         camera.set_lander(lander)
@@ -570,7 +587,7 @@ def main():
         
         if lander and lander.exists:
             lander.update_velocity(dt)
-            lander.update_height(sector.noise_surface(lander.lon, lander.lat))
+            lander.update_height(planet.sectors[0][0].noise_surface(lander.lon, lander.lat))
         
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         
@@ -580,28 +597,29 @@ def main():
             WireframeMaterial.setup_wireframe()
         else:
             WireframeMaterial.setup_solid()
-        
-        sector.draw_optimized(wireframe=wireframe_mode)
+        for i in range(len(planet.sectors)):
+            for j in range(len(planet.sectors[i])):
+                planet.sectors[i][j].draw_optimized(wireframe=wireframe_mode)
         
         if lander and lander.exists:
             lander.draw()
         if lander != None:
             ceil_lon = math.ceil(math.degrees(lander.lon))
             ceil_lat = math.ceil(math.degrees(lander.lat))
-            if math.fabs(ceil_lon - math.degrees(sector.longitude)) > 5 or math.fabs(ceil_lat - math.degrees(sector.latitude)) > 5:
-                sector.longitude = lander.lon
-                sector.latitude = lander.lat
-                sector.save_to_file()
-                sector = SphereSector.load_from_file(f"{sector.planetName}.bin")
-                camera = SectorCamera(sector, lander)
-        
+            delta_lon = ceil_lon - planet.longitude
+            delta_lat = ceil_lat - planet.latitude
+            if math.fabs(delta_lon) > 0.5 or math.fabs(delta_lat) > 0.5:
+                planet.longitude = ceil_lon
+                planet.latitude = ceil_lat
+                planet = update_sectors(planet, delta_lon, delta_lat)
+                #camera = SectorCamera(planet, lander)
         if show_axes:
             draw_coordinate_axes()
         
         mode_text = "WIREFRAME" if wireframe_mode else "SOLID"
         lander_text = " + LANDER" if lander and lander.exists else ""
         follow_text = " [FOLLOW]" if camera.follow_lander else ""
-        pygame.display.set_caption(f"LandingSim - {mode_text}{lander_text}{follow_text} - {sector.planetName}")
+        pygame.display.set_caption(f"LandingSim - {mode_text}{lander_text}{follow_text}")
         
         pygame.display.flip()
 
