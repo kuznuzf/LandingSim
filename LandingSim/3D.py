@@ -15,6 +15,22 @@ def NameToCoords(name):
 def CoordsToName(a, b):
     return str(a)+"_"+str(b)
 
+def scalar_product(a, b):
+    return a.x * b.x + a.y * b.y + a.z * b.z
+
+def vector_product(a, b):
+    return Vector3(a.y*b.z - a.z*b.y, a.x*b.z - a.z*b.x, a.x*b.y - a.y*b.x)
+
+class Vector3:
+    def __init__(self, x, y, z):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.length = math.sqrt(x**2 + y**2 + z**2)
+
+    def normalized(self):
+        return Vector3(self.x/self.length, self.y/self.length, self.z/self.length)
+
 class Planet:
     def __init__(self, radius_render=1, longitude=0, latitude=0, radius=7, details=32):
         self.radius_render = radius_render
@@ -513,7 +529,7 @@ def main():
     print("Управление:")
     print("W - переключить Wireframe/Solid режим")
     print("A - показать/скрыть оси координат")
-    #print("C - создать новую область")
+    print("C - создать новую планету")
     #print("L - загрузить сохраненную область")
     #print("S - сохранить текущую область")
     print("R - сброс камеры")
