@@ -45,7 +45,7 @@ class Planet:
             'red_angle': 90
         }
         
-        self.craters = self._generate_craters(8000)
+        self.craters = self._generate_craters(30, longitude, latitude, radius_render)
         self.sectors = []
         for i in range((radius_render-1)*2+1):
             self.sectors.append([])
@@ -57,22 +57,21 @@ class Planet:
                                                    longi, latj, details, 
                                                    gradient_settings=self.gradient_settings,
                                                    craters=self.craters))
-    def _generate_craters(self, num_craters=1000):
+    def _generate_craters(self, num_craters=1000, longit=0, latit=0, radiu=1):
         craters = []
         for _ in range(num_craters):
-            lon = random.uniform(-math.pi, math.pi)
-            lat = math.asin(random.uniform(-1, 1))
-            radius = random.uniform(0.001, 0.03)  # угловой радиус
-            # задаём параметры формы
+            lon = random.uniform(math.radians(longit - radiu), math.radians(longit + radiu))
+            lat = random.uniform(math.radians(latit - radiu), math.radians(latit + radiu))
+            radius = random.uniform(0.0001, 0.03)  # угловой радиус
             crater = {
                 'lon': lon,
                 'lat': lat,
                 'R': radius,                     # полный радиус
-                'D': (self.radius * radius) / 6, # глубина (линейная)
+                'D': (self.radius * radius) / 7, # глубина (линейная)
                 'Rc': 0.85 * radius,              # радиус впадины
                 'Rp': 0.2 * radius,               # радиус пика
                 'h_peak': 0.2 * (self.radius * radius) / 5,
-                'h_rim': 0.1 * (self.radius * radius) / 5
+                'h_rim': 0.025 * (self.radius * radius) / 5
             }
             craters.append(crater)
         return craters
@@ -939,9 +938,9 @@ def main():
     pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
     pygame.display.set_caption("LandingSim")
     
-    planet = Planet(3, 0, 0, 7, 10)
+    planet = Planet(3, 0, 0, 7, 24)
     
-    updating_sectors = True
+    updating_sectors = False
 
     lander = None
     camera = SectorCamera(planet, lander)
