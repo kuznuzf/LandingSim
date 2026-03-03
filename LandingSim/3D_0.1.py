@@ -14,14 +14,14 @@ def NameToCoords(name):
 def CoordsToName(a, b):
     return str(a)+"_"+str(b)
 
-def scalar_product(a, b):
+def scalar_product(a, b): #Скалярное произведение Vector3 a * b
     return a.x * b.x + a.y * b.y + a.z * b.z
 
-def vector_product(a, b):
+def vector_product(a, b): #Векторное произведение Vector3 a х b
     return Vector3(a.y*b.z - a.z*b.y, a.x*b.z - a.z*b.x, a.x*b.y - a.y*b.x)
 
 class Vector3:
-    def __init__(self, x, y, z):
+    def __init__(self, x, y, z): #force = Vector3(x, y, z)
         self.x = x
         self.y = y
         self.z = z
@@ -45,7 +45,7 @@ class Planet:
             'red_angle': 90
         }
         
-        self.craters = self._generate_craters(30, longitude, latitude, radius_render)
+        self.craters = self._generate_craters(25, longitude, latitude, radius_render)
         self.sectors = []
         for i in range((radius_render-1)*2+1):
             self.sectors.append([])
@@ -62,7 +62,7 @@ class Planet:
         for _ in range(num_craters):
             lon = random.uniform(math.radians(longit - radiu), math.radians(longit + radiu))
             lat = random.uniform(math.radians(latit - radiu), math.radians(latit + radiu))
-            radius = random.uniform(0.0001, 0.03)  # угловой радиус
+            radius = random.uniform(0.00004 * self.radius_render, 0.01 * self.radius_render)  # угловой радиус
             crater = {
                 'lon': lon,
                 'lat': lat,
@@ -108,6 +108,7 @@ class SphereSector:
         self._indices_cache = None
         self._gradient_cache = {}
         self.craters = craters if craters is not None else []
+        self.stones = self.generate_stones(random.randint(5, 20))
         
         self._setup_geometry()
         
@@ -173,7 +174,7 @@ class SphereSector:
         noise_base = PerlinNoise(octaves=2, seed=4522)
         noise_mountaines = PerlinNoise(octaves=5, seed=3435)
         noise_micro = PerlinNoise(octaves=10, seed=6522)
-        h = 0.03 * noise_base([longitude*5, latitude*5])
+        h = 0.01 * noise_base([longitude*5, latitude*5])
         mountaines = noise_mountaines([longitude*4, latitude*4]) + 0.2 * noise_base([longitude*20, latitude*20])
         if mountaines > 0.2:
             h += 0.06 * (mountaines - 0.2)
@@ -194,13 +195,18 @@ class SphereSector:
                 angle = math.acos(cos_angle)
                 delta = self.crater_effect(crater, angle)
                 total_delta += delta
-            # Ограничение снизу, чтобы не уйти в бесконечность (по желанию)
-            # max_depth = 2.0  # максимальная допустимая глубина
-            # total_delta = max(total_delta, -max_depth)
             h += total_delta
-        h += 0.01 * noise_micro([longitude*10, latitude*10])
+        h += 0.014 * noise_micro([longitude*10, latitude*10])
         depolarizator = 1 - latitude**12/225.652
         return self.radius + h * depolarizator
+    
+    def generate_stones(self, count):
+        res = [] #[(longitude, latitude, height), (..., ..., ...), ...]
+        for _ in range(count):
+            lg = random.uniform(self.min_lon, self.max_lon)
+            lt = random.uniform(self.min_lat, self.max_lat)
+            res.append((lg, lt, self.noise_surface(lg, lt)))
+        return res
     
     def get_vertices_and_normals(self):
         cache_key = CoordsToName(self.deg_longitude, self.deg_latitude)
@@ -303,7 +309,7 @@ class SphereSector:
         else:
             t = min(1.0, (angle - orange_angle) / (red_angle - orange_angle))
             return (1.0, 0.5 - t * 0.5, 0.0)
-
+        
     def draw_polygons(self):
         vertices, _ = self.get_vertices_and_normals()
         indices = self.generate_indices()
@@ -366,7 +372,6 @@ class SphereSector:
         glEnable(GL_LIGHTING)
     
     def draw_wireframe(self):
-        """Отрисовка треугольников линиями с цветами градиента"""
         vertices, _ = self.get_vertices_and_normals()
         indices = self.generate_indices()
         
@@ -428,7 +433,6 @@ class SphereSector:
         glEnable(GL_LIGHTING)
     
     def draw_squares(self):
-        """Отрисовка сплошных квадратов (пикселей) с цветами градиента"""
         vertices, _ = self.get_vertices_and_normals()
         grid_size = self.details + 1
         
@@ -467,7 +471,15 @@ class SphereSector:
         elif mode == 'squares':
             self.draw_squares()
         else:  # 'polygons' по умолчанию
-            self.draw_polygons()
+            self.draw_polygons() 
+    def draw_stones(self):
+        for i in range(len(self.stones)):
+            glPointSize(10.0)
+            glColor3f(254.0, 0.0, 0.0)
+            glBegin(GL_POINTS)
+            xx, yy, zz = self.spherical_to_cartesian(self.stones[i][0], self.stones[i][1] , self.stones[i][2]- self.radius + 0.002)
+            glVertex3f(xx, yy, zz)
+            glEnd()
     
     def set_gradient_settings(self, gradient_settings):
         self.gradient_settings = gradient_settings
@@ -507,7 +519,7 @@ class Lander:
         self.heig += self.v_heig * dt
         
         if self.heig < self.heig_planet:
-            self.heig = 0
+            self.heig = self.heig_planet
             self.v_heig = 0
     
     def update_height(self, heig_planet):
@@ -938,7 +950,7 @@ def main():
     pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
     pygame.display.set_caption("LandingSim")
     
-    planet = Planet(3, 0, 0, 7, 24)
+    planet = Planet(1, 0, 0, 7, 100)
     
     updating_sectors = False
 
@@ -1041,6 +1053,7 @@ def main():
         for i in range(len(planet.sectors)):
             for j in range(len(planet.sectors[i])):
                 planet.sectors[i][j].draw_optimized(mode=render_mode)
+                planet.sectors[i][j].draw_stones()
         
         # Отрисовка лендера
         if lander and lander.exists:
