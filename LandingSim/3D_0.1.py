@@ -605,7 +605,7 @@ class SectorCamera:
             glTranslatef(-sector_center.center_x, -sector_center.center_y, -sector_center.center_z)
     
     def zoom(self, delta):
-        if not self.follow_lander:
+        #if not self.follow_lander:
             self.distance = max(self.min_distance, min(self.max_distance, self.distance + delta/5))
     
     def rotate(self, delta_x, delta_y):
@@ -742,7 +742,7 @@ def create_lander_standard(planet):
     lon, lat = 0, 0  # старт в центре
     heig = planet.radius + 2  # высота на 2 единицы выше радиуса планеты
     v_lon, v_lat, v_heig = 0.01, 0, 0  # скорость 0.01 по долготе
-    size = 0.1  # стандартный размер
+    size = 0.04  # стандартный размер
     
     lon_rad = math.radians(lon)
     lat_rad = math.radians(lat)
