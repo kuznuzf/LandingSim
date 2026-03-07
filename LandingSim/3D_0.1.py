@@ -473,13 +473,15 @@ class SphereSector:
         else:  # 'polygons' по умолчанию
             self.draw_polygons() 
     def draw_stones(self):
+        glDisable(GL_LIGHTING)
         for i in range(len(self.stones)):
             glPointSize(10.0)
-            glColor3f(254.0, 0.0, 0.0)
             glBegin(GL_POINTS)
             xx, yy, zz = self.spherical_to_cartesian(self.stones[i][0], self.stones[i][1] , self.stones[i][2]- self.radius + 0.002)
+            glColor(0.7, 0, 0.7)
             glVertex3f(xx, yy, zz)
             glEnd()
+        glEnable(GL_LIGHTING)
     
     def set_gradient_settings(self, gradient_settings):
         self.gradient_settings = gradient_settings
