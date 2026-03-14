@@ -18,7 +18,7 @@ def scalar_product(a, b): #Скалярное произведение Vector3 a
     return a.x * b.x + a.y * b.y + a.z * b.z
 
 def vector_product(a, b): #Векторное произведение Vector3 a х b
-    return Vector3(a.y*b.z - a.z*b.y, a.x*b.z - a.z*b.x, a.x*b.y - a.y*b.x)
+    return Vector3(a.y*b.z - a.z*b.y, - a.x*b.z + a.z*b.x, a.x*b.y - a.y*b.x)
 
 class Vector3:
     def __init__(self, x, y, z): #force = Vector3(x, y, z)
