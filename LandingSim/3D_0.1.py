@@ -319,17 +319,18 @@ class SphereSector:
             return (1.0, 0.5 - t * 0.5, 0.0)
         
     def draw_polygons(self):
-        vertices, _ = self.get_vertices_and_normals()
+        vertices, normals = self.get_vertices_and_normals()
         indices = self.generate_indices()
-        
+    
         glDisable(GL_LIGHTING)
-        glDisable(GL_CULL_FACE)  # Отключаем culling для видимости с обеих сторон
-        
+        glDisable(GL_CULL_FACE)
+    
+        glBegin(GL_TRIANGLES)
         for i in range(0, len(indices), 3):
-            idx1, idx2, idx3 = indices[i], indices[i+1], indices[i+2]
-            v1 = vertices[idx1]
-            v2 = vertices[idx2]
-            v3 = vertices[idx3]
+            # вычисляем цвет для треугольника
+            v1 = vertices[indices[i]]
+            v2 = vertices[indices[i+1]]
+            v3 = vertices[indices[i+2]]
             
             center = (
                 (v1[0] + v2[0] + v3[0]) / 3,
@@ -356,22 +357,20 @@ class SphereSector:
                 ry = center[1] / r_length
                 rz = center[2] / r_length
                 
-                dot_product = nx * rx + ny * ry + nz * rz
-                dot_product = max(-1.0, min(1.0, dot_product))
+            dot_product = nx * rx + ny * ry + nz * rz
+            dot_product = max(-1.0, min(1.0, dot_product))
                 
-                angle = math.degrees(math.acos(abs(dot_product)))
-                color = self.get_color_for_gradient(angle)
-                glColor3f(*color)
-            else:
-                glColor3f(0.5, 0.5, 0.5)
+            angle = math.degrees(math.acos(abs(dot_product)))
             
-            glBegin(GL_TRIANGLES)
+            color = self.get_color_for_gradient(angle)
+            glColor3f(*color)
+        
             glVertex3f(*v1)
             glVertex3f(*v2)
             glVertex3f(*v3)
-            glEnd()
-        
-        glEnable(GL_CULL_FACE) 
+        glEnd()
+    
+        glEnable(GL_CULL_FACE)
         glEnable(GL_LIGHTING)
     
     def draw_wireframe(self):
