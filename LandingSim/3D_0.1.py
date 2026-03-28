@@ -7,6 +7,8 @@ from pygame.locals import *
 from OpenGL.GL import *
 from OpenGL.GLU import *
 
+SCALE = 25000
+
 def NameToCoords(name):
     a, b = name.split("_")
     return a, b
@@ -18,7 +20,7 @@ def scalar_product(a, b): #Скалярное произведение Vector3 a
     return a.x * b.x + a.y * b.y + a.z * b.z
 
 def vector_product(a, b): #Векторное произведение Vector3 a х b
-    return Vector3(a.y*b.z - a.z*b.y, - a.x*b.z + a.z*b.x, a.x*b.y - a.y*b.x)
+    return Vector3(a.y*b.z - a.z*b.y, a.x*b.z - a.z*b.x, a.x*b.y - a.y*b.x)
 
 class Vector3:
     def __init__(self, x, y, z): #force = Vector3(x, y, z)
@@ -29,13 +31,17 @@ class Vector3:
 
     def normalized(self):
         return Vector3(self.x/self.length, self.y/self.length, self.z/self.length)
+    
+def get_radius(equ, pol, latitude):
+    return pol + 2*latitude/math.pi * (equ - pol)
 
 class Planet:
-    def __init__(self, radius_render=1, longitude=0, latitude=0, radius=7, details=32):
+    def __init__(self, radius_render=1, longitude=0, latitude=0, equ_radius=7, pol_radius=6.6, details=32):
         self.radius_render = radius_render
         self.longitude = longitude 
         self.latitude = latitude
-        self.radius = radius
+        self.equ_radius = equ_radius
+        self.pol_radius = pol_radius
         self.details = details
         
         self.gradient_settings = {
@@ -53,7 +59,7 @@ class Planet:
             for j in range((radius_render-1)*2+1):
                 latj = latitude + j - (radius_render-1)
                 nameij = CoordsToName(longi, latj)
-                self.sectors[i].append(SphereSector(radius, math.radians(longi), math.radians(latj), 
+                self.sectors[i].append(SphereSector(equ_radius, pol_radius, math.radians(longi), math.radians(latj), 
                                                    longi, latj, details, 
                                                    gradient_settings=self.gradient_settings,
                                                    craters=self.craters))
@@ -63,23 +69,25 @@ class Planet:
             lon = random.uniform(math.radians(longit - radiu), math.radians(longit + radiu))
             lat = random.uniform(math.radians(latit - radiu), math.radians(latit + radiu))
             radius = random.uniform(0.00004 * self.radius_render, 0.01 * self.radius_render)  # угловой радиус
+            planet_radius = get_radius(self.equ_radius, self.pol_radius, lat)
             crater = {
                 'lon': lon,
                 'lat': lat,
                 'R': radius,                     # полный радиус
-                'D': (self.radius * radius) / 7, # глубина (линейная)
+                'D': (planet_radius * radius) / 7, # глубина (линейная)
                 'Rc': 0.85 * radius,              # радиус впадины
                 'Rp': 0.2 * radius,               # радиус пика
-                'h_peak': 0.2 * (self.radius * radius) / 5,
-                'h_rim': 0.025 * (self.radius * radius) / 5
+                'h_peak': 0.2 * (planet_radius * radius) / 5,
+                'h_rim': 0.025 * (planet_radius * radius) / 5
             }
             craters.append(crater)
         return craters
 
 class SphereSector:
-    def __init__(self, radius=7.0, longitude=0, latitude=0, deg_longitude=0, deg_latitude=0, details=32, 
+    def __init__(self, equ_radius, pol_radius, longitude=0, latitude=0, deg_longitude=0, deg_latitude=0, details=32, 
                  gradient_settings=None, craters=None):
-        self.radius = radius
+        self.equ_radius = equ_radius
+        self.pol_radius = pol_radius
         self.longitude = longitude
         self.latitude = latitude
         self.deg_longitude = deg_longitude
@@ -101,13 +109,12 @@ class SphereSector:
         self.min_lon = self.longitude - self.scale_lon/2
         self.max_lon = self.longitude + self.scale_lon/2
         
-        self.center_x, self.center_y, self.center_z = self.spherical_to_cartesian(self.longitude, self.latitude, 0.05)
-        
         self._vertices_cache = {}
         self._normals_cache = {}
         self._indices_cache = None
         self._gradient_cache = {}
         self.craters = craters if craters is not None else []
+        self.center_x, self.center_y, self.center_z = self.spherical_to_cartesian(self.longitude, self.latitude, self.noise_surface(self.longitude,self.latitude)/SCALE+0.1)
         self.stones = self.generate_stones(random.randint(5, 20))
         
         self._setup_geometry()
@@ -123,7 +130,7 @@ class SphereSector:
         ]
     
     def spherical_to_cartesian(self, longitude, latitude, height=0):
-        effective_radius = self.radius + height
+        effective_radius = height
         cos_lat = math.cos(latitude)
         x = effective_radius * cos_lat * math.cos(longitude)
         y = effective_radius * math.sin(latitude)
@@ -171,6 +178,7 @@ class SphereSector:
             return h_rim * math.sin(t)**2
     
     def noise_surface(self, longitude, latitude):
+        radius = get_radius(self.equ_radius, self.pol_radius, latitude)
         noise_base = PerlinNoise(octaves=2, seed=4522)
         noise_mountaines = PerlinNoise(octaves=5, seed=3435)
         noise_micro = PerlinNoise(octaves=10, seed=6522)
@@ -198,7 +206,7 @@ class SphereSector:
             h += total_delta
         h += 0.014 * noise_micro([longitude*10, latitude*10])
         depolarizator = 1 - latitude**12/225.652
-        return self.radius + h * depolarizator
+        return radius + h * depolarizator
     
     def generate_stones(self, count):
         res = [] #[(longitude, latitude, height), (..., ..., ...), ...]
@@ -224,7 +232,7 @@ class SphereSector:
             for longitude in self.lon_angles:
                 height = self.noise_surface(longitude, latitude)
                 
-                effective_radius = height
+                effective_radius = height/SCALE
                 cos_lon = math.cos(longitude)
                 sin_lon = math.sin(longitude)
                 
@@ -317,23 +325,18 @@ class SphereSector:
         glDisable(GL_LIGHTING)
         glDisable(GL_CULL_FACE)  # Отключаем culling для видимости с обеих сторон
         
-        # Рисуем треугольники с цветами градиента
         for i in range(0, len(indices), 3):
-            # Получаем три вершины треугольника
             idx1, idx2, idx3 = indices[i], indices[i+1], indices[i+2]
             v1 = vertices[idx1]
             v2 = vertices[idx2]
             v3 = vertices[idx3]
             
-            # Вычисляем градиент для этого треугольника
-            # Для простоты используем среднее положение
             center = (
                 (v1[0] + v2[0] + v3[0]) / 3,
                 (v1[1] + v2[1] + v3[1]) / 3,
                 (v1[2] + v2[2] + v3[2]) / 3
             )
             
-            # Аппроксимируем нормаль треугольника
             v1v2 = (v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2])
             v1v3 = (v3[0] - v1[0], v3[1] - v1[1], v3[2] - v1[2])
             
@@ -368,7 +371,7 @@ class SphereSector:
             glVertex3f(*v3)
             glEnd()
         
-        glEnable(GL_CULL_FACE)  # Включаем culling обратно
+        glEnable(GL_CULL_FACE) 
         glEnable(GL_LIGHTING)
     
     def draw_wireframe(self):
@@ -376,7 +379,7 @@ class SphereSector:
         indices = self.generate_indices()
         
         glDisable(GL_LIGHTING)
-        glDisable(GL_CULL_FACE)  # Отключаем culling для видимости с обеих сторон
+        glDisable(GL_CULL_FACE)  
         
         # Рисуем треугольники линиями с цветами градиента
         for i in range(0, len(indices), 3):
@@ -472,14 +475,15 @@ class SphereSector:
             self.draw_squares()
         else:  # 'polygons' по умолчанию
             self.draw_polygons() 
+    
     def draw_stones(self):
         glDisable(GL_LIGHTING)
         for i in range(len(self.stones)):
             glPointSize(10.0)
             glBegin(GL_POINTS)
-            xx, yy, zz = self.spherical_to_cartesian(self.stones[i][0], self.stones[i][1] , self.stones[i][2]- self.radius + 0.002)
+            xx, yy, zz = self.spherical_to_cartesian(self.stones[i][0], self.stones[i][1], self.stones[i][2] + 200)
             glColor(0.7, 0, 0.7)
-            glVertex3f(xx, yy, zz)
+            glVertex3f(xx/SCALE, yy/SCALE, zz/SCALE)
             glEnd()
         glEnable(GL_LIGHTING)
     
@@ -541,7 +545,7 @@ class Lander:
         glDisable(GL_LIGHTING)
         glColor3f(1.0, 0.0, 0.0)
         
-        x, y, z = self.get_cartesian_position(self.heig)
+        x, y, z = self.get_cartesian_position(self.heig/SCALE)
         
         s = self.size
         
@@ -573,8 +577,8 @@ class SectorCamera:
         self.lander = lander
         self.follow_lander = False
         self.distance = 2.0
-        self.min_distance = 0.2
-        self.max_distance = 30.0
+        self.min_distance = 0.05
+        self.max_distance = 1000.0
         self.rotation_x = 0
         self.rotation_y = 0
         
@@ -589,14 +593,14 @@ class SectorCamera:
     
     def update_camera_position(self):
         glLoadIdentity()
-        gluPerspective(45, 800/600, 0.1, 100.0)
+        gluPerspective(45, 800/600, self.min_distance, self.max_distance)
         
         if self.follow_lander and self.lander and self.lander.exists:
             glTranslatef(0.0, 0.0, -self.distance)
             
             glRotatef(self.rotation_x, 1, 0, 0)
             glRotatef(self.rotation_y, 0, 1, 0)
-            x, y, z = self.lander.get_cartesian_position(self.lander.heig)
+            x, y, z = self.lander.get_cartesian_position(self.lander.heig/SCALE)
             glTranslatef(-x, -y, -z)
         else:
             glTranslatef(0.0, 0.0, -self.distance)
@@ -662,7 +666,7 @@ def update_sectors(planet, delta_lon, delta_lat):
                 new_lon = planet.longitude + i - (planet.radius_render - 1)
                 new_lat = planet.latitude + j - (planet.radius_render - 1)
                 
-                new_sector = SphereSector(planet.radius, math.radians(new_lon), math.radians(new_lat), 
+                new_sector = SphereSector(planet.equ_radius, planet.pol_radius, math.radians(new_lon), math.radians(new_lat), 
                                          new_lon, new_lat, planet.details,
                                          gradient_settings=planet.gradient_settings,
                                          craters=planet.craters)
@@ -742,14 +746,13 @@ def create_lander_standard(planet):
     
     # Стандартные параметры
     lon, lat = 0, 0  # старт в центре
-    heig = planet.radius + 2  # высота на 2 единицы выше радиуса планеты
-    v_lon, v_lat, v_heig = 0.01, 0, 0  # скорость 0.01 по долготе
-    size = 0.04  # стандартный размер
+    heig = planet.equ_radius + 20000
+    v_lon, v_lat, v_heig = 0.001, 0, 0 
+    size = 0.05
     
     lon_rad = math.radians(lon)
     lat_rad = math.radians(lat)
     
-    # Получаем высоту поверхности в стартовой точке
     surface_height = planet.sectors[0][0].noise_surface(0, 0)
     heig_planet = surface_height
     
@@ -773,9 +776,9 @@ def create_lander_custom(planet):
         if lon_lat_heig.strip():
             lon, lat, heig = map(float, lon_lat_heig.split())
         else:
-            lon, lat, heig = 0, 0, planet.radius + 2
+            lon, lat, heig = 0, 0, planet.equ_radius + 2
         
-        v_lon_lat_heig = input("Скорость по долготе, широте, высоте [0.01 0 0]: ")
+        v_lon_lat_heig = input("Скорость по долготе, широте, высоте: ")
         if v_lon_lat_heig.strip():
             v_lon, v_lat, v_heig = map(float, v_lon_lat_heig.split())
         else:
@@ -789,7 +792,7 @@ def create_lander_custom(planet):
         
         # Получаем высоту поверхности в указанной точке
         surface_height = planet.sectors[0][0].noise_surface(lon_rad, lat_rad)
-        heig_planet = planet.radius + surface_height
+        heig_planet = surface_height
         
         new_lander = Lander(lon_rad, lat_rad, heig, v_lon, v_lat, v_heig, size, heig_planet)
         
@@ -814,7 +817,7 @@ def planet_menu(planet, lander, camera):
             print("\n=== Текущие параметры планеты ===")
             print(f"Радиус прорисовки: {planet.radius_render}")
             print(f"Текущий центр: долгота={planet.longitude}°, широта={planet.latitude}°")
-            print(f"Радиус планеты: {planet.radius}")
+            print(f"Радиус планеты: {(planet.equ_radius+planet.pol_radius)/2}")
             print(f"Детализация: {planet.details}")
             print(f"Количество секторов: {len(planet.sectors)}x{len(planet.sectors[0])}")
             
@@ -831,26 +834,24 @@ def planet_menu(planet, lander, camera):
             else:
                 Long, Lat = 0, 0
             
-            Radiu = input("Радиус Планеты (средний) [7]: ")
-            Radiu = int(Radiu) if Radiu.strip() else 7
+            ERadiu = input("Экваториальный радиус Планеты: ")
+            ERadiu = int(ERadiu) if ERadiu.strip() else 7
+            PRadiu = input("Полярный радиус Планеты: ")
+            PRadiu = int(PRadiu) if PRadiu.strip() else 6.6
             
             Details = input("Детализация [8]: ")
             Details = int(Details) if Details.strip() else 8
             
-            # Создаем новую планету
-            new_planet = Planet(Radius_sectors, Long, Lat, Radiu, Details)
+            new_planet = Planet(Radius_sectors, Long, Lat, ERadiu, PRadiu, Details)
             
-            # Копируем настройки градиента и рельефа
             new_planet.gradient_settings = planet.gradient_settings.copy()
             
-            # Обновляем настройки во всех секторах новой планеты
             for i in range(len(new_planet.sectors)):
                 for j in range(len(new_planet.sectors[i])):
                     new_planet.sectors[i][j].set_gradient_settings(new_planet.gradient_settings)
             
             planet = new_planet
             
-            # Удаляем лендер при создании новой планеты
             if lander and lander.exists:
                 lander.exists = False
                 print("Лендер удален при создании новой планеты")
@@ -952,7 +953,7 @@ def main():
     pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
     pygame.display.set_caption("LandingSim")
     
-    planet = Planet(1, 0, 0, 7, 100)
+    planet = Planet(1, 0, 0, 1738140, 1735970, 45)
     
     updating_sectors = False
 
@@ -987,7 +988,6 @@ def main():
     print("Красный: 30°+ (крутой)")
     print("\nСтандартный режим лендера:")
     print("  - Положение: центр (0°, 0°)")
-    print(f"  - Высота: радиус планеты + 2 (текущий: {planet.radius + 2})")
     print("  - Скорость: 0.01 по долготе")
     print("  - Размер: 0.1")
     
