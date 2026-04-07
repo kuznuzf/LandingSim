@@ -51,7 +51,7 @@ class Planet:
             'red_angle': 90
         }
         
-        self.craters = self._generate_craters(25, longitude, latitude, radius_render)
+        self.craters = self._generate_craters(10, 70, longitude, latitude, radius_render)
         self.sectors = []
         for i in range((radius_render-1)*2+1):
             self.sectors.append([])
@@ -63,13 +63,14 @@ class Planet:
                                                    longi, latj, details, 
                                                    gradient_settings=self.gradient_settings,
                                                    craters=self.craters))
-    def _generate_craters(self, num_craters=1000, longit=0, latit=0, radiu=1):
+    def _generate_craters(self, big_c=10, small_c=20, longit=0, latit=0, radiu=1):
         craters = []
-        for _ in range(num_craters):
+        for _ in range(big_c):
             lon = random.uniform(math.radians(longit - radiu), math.radians(longit + radiu))
             lat = random.uniform(math.radians(latit - radiu), math.radians(latit + radiu))
-            radius = random.uniform(0.00004 * self.radius_render, 0.01 * self.radius_render)  # угловой радиус
+            radius = random.uniform(0.002 * self.radius_render, 0.01 * self.radius_render)
             planet_radius = get_radius(self.equ_radius, self.pol_radius, lat)
+            noise_cr = random.randint(2, 1000)
             crater = {
                 'lon': lon,
                 'lat': lat,
@@ -78,7 +79,26 @@ class Planet:
                 'Rc': 0.85 * radius,              # радиус впадины
                 'Rp': 0.2 * radius,               # радиус пика
                 'h_peak': 0.2 * (planet_radius * radius) / 5,
-                'h_rim': 0.025 * (planet_radius * radius) / 5
+                'h_rim': 0.075 * (planet_radius * radius) / 5,
+                'N': noise_cr
+            }
+            craters.append(crater)
+        for _ in range(small_c):
+            lon = random.uniform(math.radians(longit - radiu), math.radians(longit + radiu))
+            lat = random.uniform(math.radians(latit - radiu), math.radians(latit + radiu))
+            radius = random.uniform(0.0003 * self.radius_render, 0.003 * self.radius_render)
+            planet_radius = get_radius(self.equ_radius, self.pol_radius, lat)
+            noise_cr = random.randint(2, 1000)
+            crater = {
+                'lon': lon,
+                'lat': lat,
+                'R': radius,                     # полный радиус
+                'D': (planet_radius * radius) / 7, # глубина (линейная)
+                'Rc': 0.85 * radius,              # радиус впадины
+                'Rp': 0.2 * radius,               # радиус пика
+                'h_peak': 0.2 * (planet_radius * radius) / 5,
+                'h_rim': 0.075 * (planet_radius * radius) / 5,
+                'N': noise_cr
             }
             craters.append(crater)
         return craters
@@ -113,6 +133,7 @@ class SphereSector:
         self._normals_cache = {}
         self._indices_cache = None
         self._gradient_cache = {}
+        self._height_color_cashe = []
         self.craters = craters if craters is not None else []
         self.center_x, self.center_y, self.center_z = self.spherical_to_cartesian(self.longitude, self.latitude, self.noise_surface(self.longitude,self.latitude)/SCALE+0.1)
         self.stones = self.generate_stones(random.randint(5, 20))
@@ -157,7 +178,20 @@ class SphereSector:
         self._indices_cache = indices
         return indices
     
-    def crater_effect(self, crater, r):
+    def generate_height_color(self):
+        if len(self._height_color_cashe) != 0:
+            return self._height_color_cashe
+        
+        cols = []
+        vertices, _ = self.get_vertices_and_normals()
+        indices = self.generate_indices()
+        for i in range(0, len(indices), 3):
+            rho = vertices[indices[i]][0]**2 + vertices[indices[i]][1]**2 + vertices[indices[i]][2]**2
+            cols.append(1 - 10*(abs(rho - (self.equ_radius/SCALE)**2)/rho)**0.5)
+        self._height_color_cashe = cols
+        return cols
+    
+    def crater_effect(self, crater, r, long, lat):
         R = crater['R']
         if r > R:
             return 0.0
@@ -166,16 +200,20 @@ class SphereSector:
         h_peak = crater.get('h_peak', 0.0)
         h_crater = crater.get('D', 0.0)  # глубина
         h_rim = crater.get('h_rim', 0.0)
+        crater_noise = PerlinNoise(4, crater.get('N'))
+        deborder = (R**6 - r**6)/R**6
+        scale = 1.0 / (R + 0.001)   # +0.001 для избежания деления на ноль
+        noise = crater_noise([long * scale, lat * scale]) * h_crater * deborder / 3
     
         if r <= Rp:
             t = (math.pi * r) / (2 * Rp)
-            return h_peak * math.cos(t)**2 - h_crater * (1 - (r/Rc)**2)
+            return h_peak * math.cos(t)**2 - h_crater * (1 - (r/Rc)**2) + noise
         elif r <= Rc:
-            return -h_crater * (1 - (r/Rc)**2)
+            return -h_crater * (1 - (r/Rc)**2) + noise
         else:
         # вал
-            t = (math.pi * (r - Rc)) / (2 * (R - Rc))
-            return h_rim * math.sin(t)**2
+            t = (math.pi * (r - Rc)) / (1.75 * (R - Rc))
+            return h_rim * math.sin(t**2) + noise
     
     def noise_surface(self, longitude, latitude):
         radius = get_radius(self.equ_radius, self.pol_radius, latitude)
@@ -201,7 +239,7 @@ class SphereSector:
                 cos_angle = sin_lat * sin_clat + cos_lat * cos_clat * cos_dlon
                 cos_angle = max(-1.0, min(1.0, cos_angle))
                 angle = math.acos(cos_angle)
-                delta = self.crater_effect(crater, angle)
+                delta = self.crater_effect(crater, angle, longitude, latitude)
                 total_delta += delta
             h += total_delta
         h += 0.014 * noise_micro([longitude*10, latitude*10])
@@ -373,6 +411,26 @@ class SphereSector:
         glEnable(GL_CULL_FACE)
         glEnable(GL_LIGHTING)
     
+    def draw_mono_color(self):
+        vertices, normals = self.get_vertices_and_normals()
+        indices = self.generate_indices()
+        cols = self.generate_height_color()
+        glDisable(GL_LIGHTING)
+        glDisable(GL_CULL_FACE)
+        glBegin(GL_TRIANGLES)
+        for i in range(0, len(indices), 3):
+            
+            glColor3f(cols[i//3], cols[i//3], cols[i//3])
+            glVertex3f(*vertices[indices[i]])
+
+            glVertex3f(*vertices[indices[i+1]])
+
+            glVertex3f(*vertices[indices[i+2]])
+        glEnd()
+        glEnable(GL_LIGHTING)
+        glEnable(GL_CULL_FACE)
+        
+    
     def draw_wireframe(self):
         vertices, _ = self.get_vertices_and_normals()
         indices = self.generate_indices()
@@ -468,12 +526,14 @@ class SphereSector:
         glEnable(GL_LIGHTING)
     
     def draw_optimized(self, mode='polygons'):
-        if mode == 'wireframe':
+        if mode == 'polygons':
+            self.draw_polygons() 
+        elif mode == 'wireframe':
             self.draw_wireframe()
         elif mode == 'squares':
             self.draw_squares()
-        else:  # 'polygons' по умолчанию
-            self.draw_polygons() 
+        elif mode == 'mono': 
+            self.draw_mono_color()
     
     def draw_stones(self):
         glDisable(GL_LIGHTING)
@@ -952,7 +1012,7 @@ def main():
     pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
     pygame.display.set_caption("LandingSim")
     
-    planet = Planet(1, 0, 0, 1738140, 1735970, 45)
+    planet = Planet(1, 0, 0, 1738140, 1735970, 128)
     
     updating_sectors = False
 
@@ -965,7 +1025,7 @@ def main():
     
     clock = pygame.time.Clock()
     show_axes = True
-    render_mode = 'polygons'  # 'polygons', 'wireframe', 'squares'
+    render_mode = 'polygons'
 
     
     print("=== LandingSim ===")
@@ -985,10 +1045,6 @@ def main():
     print("Жёлтый: 5-15° (пологий)")
     print("Оранжевый: 15-30° (средний)")
     print("Красный: 30°+ (крутой)")
-    print("\nСтандартный режим лендера:")
-    print("  - Положение: центр (0°, 0°)")
-    print("  - Скорость: 0.01 по долготе")
-    print("  - Размер: 0.1")
     
     while True:
         dt = clock.tick(60) / 1000.0
@@ -1001,18 +1057,20 @@ def main():
                     pygame.quit()
                     return
                 elif event.key == pygame.K_w:
-                    # Переключение между режимами: polygons -> wireframe -> squares -> polygons
                     if render_mode == 'polygons':
                         render_mode = 'wireframe'
                     elif render_mode == 'wireframe':
                         render_mode = 'squares'
-                    else:  # squares
+                    elif render_mode == 'squares':
+                        render_mode = 'mono'
+                    else:
                         render_mode = 'polygons'
                     
                     mode_names = {
                         'polygons': 'ПОЛИГОНЫ',
                         'wireframe': 'ЛИНИИ',
-                        'squares': 'КВАДРАТЫ'
+                        'squares': 'КВАДРАТЫ',
+                        'mono': 'СЕРЫЙ'
                     }
                     print(f"Режим изменен на: {mode_names[render_mode]}")
                 elif event.key == pygame.K_a:
@@ -1050,7 +1108,6 @@ def main():
         
         camera.update_camera_position()
         
-        # Отрисовка секторов планеты
         for i in range(len(planet.sectors)):
             for j in range(len(planet.sectors[i])):
                 planet.sectors[i][j].draw_optimized(mode=render_mode)
@@ -1070,21 +1127,19 @@ def main():
                 planet.longitude = ceil_lon
                 planet.latitude = ceil_lat
                 planet = update_sectors(planet, delta_lon, delta_lat)
-        
-        # Отрисовка осей координат
         if show_axes:
             draw_coordinate_axes()
         
-        # Обновление заголовка окна
         mode_names = {
             'polygons': 'ПОЛИГОНЫ',
             'wireframe': 'ЛИНИИ',
-            'squares': 'КВАДРАТЫ'
+            'squares': 'КВАДРАТЫ',
+            'mono': 'СЕРЫЙ'
         }
         mode_text = mode_names[render_mode]
         lander_text = " + LANDER" if lander and lander.exists else ""
         follow_text = " [FOLLOW]" if camera.follow_lander else ""
-        pygame.display.set_caption(f"LandingSim - {mode_text}{lander_text}{follow_text}")
+        pygame.display.set_caption(f"LandingSim - {clock.get_fps()}")
         pygame.display.flip()
 
 if __name__ == "__main__":
