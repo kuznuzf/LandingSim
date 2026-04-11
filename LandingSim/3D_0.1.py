@@ -677,24 +677,54 @@ class SectorCamera:
         self.rotation_y += delta_x * 0.5
         self.rotation_x = max(-90, min(90, self.rotation_x + delta_y * 0.5))
 
-def draw_coordinate_axes():
-    glDisable(GL_LIGHTING)
-    glBegin(GL_LINES)
-    
-    glColor3f(1, 0, 0)
-    glVertex3f(0, 0, 0)
-    glVertex3f(2, 0, 0)
-    
-    glColor3f(0, 1, 0)
-    glVertex3f(0, 0, 0)
-    glVertex3f(0, 2, 0)
-    
-    glColor3f(0, 0, 1)
-    glVertex3f(0, 0, 0)
-    glVertex3f(0, 0, 2)
-    
-    glEnd()
-    glEnable(GL_LIGHTING)
+def draw_coordinate_frame(axes_cashe, e_rad, p_rad, n=100):
+    if len(axes_cashe) != 0:
+        glDisable(GL_LIGHTING)
+        for i in range(180):
+            glBegin(GL_LINE_LOOP)
+            glColor3f(0.2, 0.2, 1)
+            for j in range(n):
+                glVertex3f(axes_cashe[i][j][0], axes_cashe[i][j][1], axes_cashe[i][j][2])
+            glEnd()
+        for i in range(161):
+            glBegin(GL_LINE_LOOP)
+            glColor3f(0.2, 0.2, 1)
+            for j in range(n):
+                glVertex3f(axes_cashe[180 + i][j][0], axes_cashe[180 + i][j][1], axes_cashe[180 + i][j][2])
+            glEnd()
+        glEnable(GL_LIGHTING)
+    else:
+        glDisable(GL_LIGHTING)
+        vertexs = [[] for _ in range(341)]
+        for i in range(180):
+            long = math.radians(i - 0.5)
+            glBegin(GL_LINE_LOOP)
+            glColor3f(0.2, 0.2, 1)
+            for j in range(n):
+                lat = 2*math.pi/n * j
+                heig = get_radius(e_rad, p_rad, lat)
+                x = heig * math.cos(lat) * math.cos(long)
+                y = heig * math.sin(lat)
+                z = heig * math.cos(lat) * math.sin(long)
+                glVertex3f(x, y, z)
+                vertexs[i].append((x, y, z))
+            glEnd()
+        for i in range(161):
+            lat = math.radians(i - 80.5)
+            glBegin(GL_LINE_LOOP)
+            glColor3f(0.2, 0.2, 1)
+            for j in range(n):
+                long = 2*math.pi/n * j
+                heig = get_radius(e_rad, p_rad, lat)
+                x = heig * math.cos(lat) * math.cos(long)
+                y = heig * math.sin(lat)
+                z = heig * math.cos(lat) * math.sin(long)
+                glVertex3f(x, y, z)
+                vertexs[180 + i].append((x, y, z))
+            glEnd()
+        glEnable(GL_LIGHTING)
+        axes_cashe.clear()
+        axes_cashe.extend(vertexs)
 
 def list_saved_areas():
     bin_files = [f for f in os.listdir() if f.endswith('.bin')]
@@ -1025,6 +1055,7 @@ def main():
     
     clock = pygame.time.Clock()
     show_axes = True
+    axes_cashe = []
     render_mode = 'polygons'
 
     
@@ -1075,6 +1106,7 @@ def main():
                     print(f"Режим изменен на: {mode_names[render_mode]}")
                 elif event.key == pygame.K_a:
                     show_axes = not show_axes
+                    print(len(axes_cashe))
                     print(f"Оси координат: {'ВКЛ' if show_axes else 'ВЫКЛ'}")
                 elif event.key == pygame.K_SPACE:
                     camera.toggle_follow_lander()
@@ -1128,7 +1160,7 @@ def main():
                 planet.latitude = ceil_lat
                 planet = update_sectors(planet, delta_lon, delta_lat)
         if show_axes:
-            draw_coordinate_axes()
+            draw_coordinate_frame(axes_cashe, planet.equ_radius/SCALE, planet.pol_radius/SCALE)
         
         mode_names = {
             'polygons': 'ПОЛИГОНЫ',
@@ -1136,9 +1168,6 @@ def main():
             'squares': 'КВАДРАТЫ',
             'mono': 'СЕРЫЙ'
         }
-        mode_text = mode_names[render_mode]
-        lander_text = " + LANDER" if lander and lander.exists else ""
-        follow_text = " [FOLLOW]" if camera.follow_lander else ""
         pygame.display.set_caption(f"LandingSim - {clock.get_fps()}")
         pygame.display.flip()
 
