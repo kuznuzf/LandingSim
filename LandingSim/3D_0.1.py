@@ -585,6 +585,8 @@ class Lander:
         
         if self.heig < self.heig_planet:
             self.heig = self.heig_planet
+            self.v_lon = 0
+            self.v_lat = 0
             self.v_heig = 0
     
     def update_height(self, heig_planet):
@@ -600,34 +602,27 @@ class Lander:
     def draw(self):
         if not self.exists:
             return
-            
         glDisable(GL_LIGHTING)
         glColor3f(1.0, 0.0, 0.0)
-        
         x, y, z = self.get_cartesian_position(self.heig/SCALE)
-        
         s = self.size
-        
         vertices = [
             (x, y + s, z),
             (x - s, y - s, z - s),
             (x + s, y - s, z - s),
             (x, y - s, z + s)
         ]
-        
         faces = [
             (0, 1, 2),
             (0, 2, 3),
             (0, 3, 1),
             (1, 3, 2)
         ]
-        
         glBegin(GL_TRIANGLES)
         for face in faces:
             for vertex_idx in face:
                 glVertex3f(*vertices[vertex_idx])
         glEnd()
-        
         glEnable(GL_LIGHTING)
 
 class SectorCamera:
@@ -861,12 +856,12 @@ def create_lander_custom(planet):
     print("Введите значения (оставьте пустым для значения по умолчанию):")
     
     try:
-        lon_lat_heig = input("Долгота, широта, высота [0 0 9]: ")
+        lon_lat_heig = input("Долгота, широта, высота (над поверхностью): ")
         if lon_lat_heig.strip():
             lon, lat, heig = map(float, lon_lat_heig.split())
         else:
             lon, lat, heig = 0, 0, planet.equ_radius + 2
-        
+        heig += planet.equ_radius
         v_lon_lat_heig = input("Скорость по долготе, широте, высоте: ")
         if v_lon_lat_heig.strip():
             v_lon, v_lat, v_heig = map(float, v_lon_lat_heig.split())
