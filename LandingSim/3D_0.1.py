@@ -6,8 +6,11 @@ from perlin_noise import PerlinNoise
 from pygame.locals import *
 from OpenGL.GL import *
 from OpenGL.GLU import *
+import socket
+import select
 
 SCALE = 25000
+G = 6.67e-11
 
 def NameToCoords(name):
     a, b = name.split("_")
@@ -20,29 +23,71 @@ def scalar_product(a, b): #Скалярное произведение Vector3 a
     return a.x * b.x + a.y * b.y + a.z * b.z
 
 def vector_product(a, b): #Векторное произведение Vector3 a х b
-    return Vector3(a.y*b.z - a.z*b.y, a.x*b.z - a.z*b.x, a.x*b.y - a.y*b.x)
+    return Vector3(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x)
+
+def summa(a, b):
+    return Vector3(a.x + b.x, a.y + b.y, a.z + b.z)
+
+def number_product(n, v):
+    return Vector3(v.x * n, v.y * n, v.z * n)
+
+def angle(a, b):
+    cos_angle = scalar_product(a, b) / (a.length() * b.length())
+    cos_angle = max(-1.0, min(1.0, cos_angle))
+    return math.acos(cos_angle)
+
+def rotate_vector(a, alpha, beta, gamma):
+    sin_a = math.sin(alpha)
+    sin_b = math.sin(beta)
+    sin_g = math.sin(gamma)
+    cos_a = math.cos(alpha)
+    cos_b = math.cos(beta)
+    cos_g = math.cos(gamma)
+    r_x = a.x*cos_b*cos_g - a.y*sin_g*cos_b + a.z*sin_b
+    r_y = a.x*(sin_a*sin_b*cos_g + sin_g*cos_a) + a.y*(-sin_a*sin_b*sin_g + cos_a*cos_g) - a.z*(sin_a*cos_b)
+    r_z = a.x*(sin_a*sin_g - cos_a*sin_b*cos_g) + a.y*(sin_a*cos_g + sin_b*sin_g*cos_a) + a.z*(cos_a*cos_b)
+    return Vector3(r_x, r_y, r_z)
+
+def rotate_around_axis(a, axis, angle_rad):
+    k = axis.normalized()
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+    v_rot = summa(number_product(cos_a, a), number_product(sin_a, vector_product(k, a)))
+    dot = scalar_product(k, a)
+    if abs(dot) > 1e-12:
+        v_rot = summa(v_rot, number_product((1 - cos_a) * dot, k))
+    return v_rot
+
+def normal_3_point(a, b, c):
+    ab = Vector3(b.x - a.x, b.y - a.y, b.z - a.z)
+    ac = Vector3(c.x - a.x, c.y - a.y, c.z - a.z)
+    return vector_product(ab, ac)
 
 class Vector3:
     def __init__(self, x, y, z): #force = Vector3(x, y, z)
         self.x = x
         self.y = y
         self.z = z
-        self.length = math.sqrt(x**2 + y**2 + z**2)
+    def length(self): return math.sqrt(self.x**2 + self.y**2 + self.z**2)
+    def sqrlength(self): return self.x**2 + self.y**2 + self.z**2
 
     def normalized(self):
-        return Vector3(self.x/self.length, self.y/self.length, self.z/self.length)
+        l = self.length()
+        return Vector3(self.x/l, self.y/l, self.z/l)
     
 def get_radius(equ, pol, latitude):
-    return pol + 2*latitude/math.pi * (equ - pol)
+    return math.sqrt((equ*math.cos(latitude))**2 + (pol*math.sin(latitude))**2)
 
 class Planet:
-    def __init__(self, radius_render=1, longitude=0, latitude=0, equ_radius=7, pol_radius=6.6, details=32):
+    def __init__(self, radius_render=1, longitude=0, latitude=0, equ_radius=7, pol_radius=6.6, details=32, mass=1, angular_velocity=0):
         self.radius_render = radius_render
         self.longitude = longitude 
         self.latitude = latitude
         self.equ_radius = equ_radius
         self.pol_radius = pol_radius
         self.details = details
+        self.mass = mass
+        self.angular_velocity = angular_velocity
         
         self.gradient_settings = {
             'green_angle': 5,
@@ -412,7 +457,7 @@ class SphereSector:
         glEnable(GL_LIGHTING)
     
     def draw_mono_color(self):
-        vertices, normals = self.get_vertices_and_normals()
+        vertices, _ = self.get_vertices_and_normals()
         indices = self.generate_indices()
         cols = self.generate_height_color()
         glDisable(GL_LIGHTING)
@@ -535,10 +580,11 @@ class SphereSector:
         elif mode == 'mono': 
             self.draw_mono_color()
     
-    def draw_stones(self):
+    def draw_stones(self, camera):
+        scale = 20 / (camera.distance + 1)
         glDisable(GL_LIGHTING)
         for i in range(len(self.stones)):
-            glPointSize(10.0)
+            glPointSize(scale)
             glBegin(GL_POINTS)
             xx, yy, zz = self.spherical_to_cartesian(self.stones[i][0], self.stones[i][1], self.stones[i][2] + 200)
             glColor(0.7, 0, 0.7)
@@ -565,64 +611,130 @@ class SphereSector:
             'lon_range': f"{lon_deg_min:.1f}° - {lon_deg_max:.1f}°",
             'center_xyz': (self.center_x, self.center_y, self.center_z)
         }
-
-class Lander:
-    def __init__(self, lon=0, lat=0, heig=1.0, v_lon=0, v_lat=0, v_heig=0, size=0.1, heig_planet=1.0):
-        self.lon = lon
-        self.lat = lat
-        self.heig = heig
-        self.v_lon = v_lon
-        self.v_lat = v_lat
-        self.v_heig = v_heig
+def get_cartesian_position(lon, lat, heig):
+        cos_lat = math.cos(lat)
+        x = heig * cos_lat * math.cos(lon)
+        y = heig * math.sin(lat)
+        z = heig * cos_lat * math.sin(lon)
+        return (x, y, z)
+class Lander: 
+    def __init__(self, lon=0, lat=0, heig=1.0, rotation=[0,0,0], vel=Vector3(0,0,0), mass=1, mass_propell=0.5, thrust=0.1, size=0.1, heig_planet=1.0):
+        x, y, z = get_cartesian_position(lon, lat, heig)
+        self.pos = Vector3(x, y, z)
+        self.rotation = rotation
+        self.vectors_rotation = [rotate_vector(Vector3(1,0,0),rotation[0],rotation[1],rotation[2]), 
+                                 rotate_vector(Vector3(0,1,0),rotation[0],rotation[1],rotation[2]), 
+                                 rotate_vector(Vector3(0,0,1),rotation[0],rotation[1],rotation[2])] #Это направление вперёд
+        self.vel = vel
+        self.acc = Vector3(0, 0, 0)
+        self.mass = mass
+        self.mass_propell = mass_propell
+        self.mass_propell_max = mass_propell
+        self.I = 3300
+        self.usage_propell = thrust/self.I
         self.size = size
         self.heig_planet = heig_planet
+        self.thrust_force = Vector3(0,0,0)
         self.exists = True
         
-    def update_velocity(self, dt):
-        self.lon += self.v_lon * dt
-        self.lat += self.v_lat * dt
-        self.heig += self.v_heig * dt
-        
-        if self.heig < self.heig_planet:
-            self.heig = self.heig_planet
-            self.v_lon = 0
-            self.v_lat = 0
-            self.v_heig = 0
+    def update_physic(self, planet, is_thrust, dt):
+        if self.pos.length() - 0.5 < self.heig_planet: #типа 0.5 расстояние от ног до центра масс
+            self.vel = Vector3(0,0,0)
+            return
+        Force = number_product(- G * planet.mass * self.mass / self.pos.length()**3 , self.pos)
+        omega = planet.angular_velocity
+        centrifugal = Vector3(omega**2 * self.pos.x, 0, omega**2 * self.pos.z)
+        centrifugal = number_product(self.mass, centrifugal)
+        v_omega = Vector3(0, omega, 0)
+        coriolis = vector_product(v_omega, self.vel)
+        coriolis = number_product(-2 * self.mass, coriolis)
+        if is_thrust:
+            if self.mass_propell > 0:
+                dmdt = self.usage_propell
+                self.thrust_force = number_product(self.I * dmdt, self.vectors_rotation[2])
+                self.mass_propell -= dmdt
+                self.mass -= dmdt
+                Force = summa(self.thrust_force, Force)
+            else:
+                print("Закончилось топливо")
+        Force = summa(Force, centrifugal)
+        Force = summa(Force, coriolis)
+        self.acc = number_product(1/self.mass, Force)
+        self.vel = summa(self.vel, number_product(dt, self.acc))
+        self.pos = summa(self.pos, number_product(dt, self.vel))
     
     def update_height(self, heig_planet):
         self.heig_planet = heig_planet
     
-    def get_cartesian_position(self, heig):
-        cos_lat = math.cos(self.lat)
-        x = heig * cos_lat * math.cos(self.lon)
-        y = heig * math.sin(self.lat)
-        z = heig * cos_lat * math.sin(self.lon)
-        return (x, y, z)
-    
-    def draw(self):
+    def draw(self, mass_planet):
         if not self.exists:
             return
         glDisable(GL_LIGHTING)
-        glColor3f(1.0, 0.0, 0.0)
-        x, y, z = self.get_cartesian_position(self.heig/SCALE)
+        
+        x, y, z = self.pos.x/SCALE, self.pos.y/SCALE, self.pos.z/SCALE
         s = self.size
-        vertices = [
-            (x, y + s, z),
-            (x - s, y - s, z - s),
-            (x + s, y - s, z - s),
-            (x, y - s, z + s)
+        local_vertices = [
+            Vector3(0, s, 0),
+            Vector3(-s/2, -s, -s/2),
+            Vector3( s/2, -s, -s/2),
+            Vector3( s/2, -s,  s/2),
+            Vector3(-s/2, -s,  s/2) 
         ]
+        i = self.vectors_rotation[0]
+        k = self.vectors_rotation[1]
+        j = self.vectors_rotation[2]
+
+        vertices = []
+        for v in local_vertices:
+            wx = x + v.x * i.x + v.y * j.x + v.z * k.x
+            wy = y + v.x * i.y + v.y * j.y + v.z * k.y
+            wz = z + v.x * i.z + v.y * j.z + v.z * k.z
+            vertices.append((wx, wy, wz))
+
         faces = [
-            (0, 1, 2),
-            (0, 2, 3),
-            (0, 3, 1),
-            (1, 3, 2)
+            (0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 1),
+            (1, 3, 2), (1, 4, 3) 
         ]
         glBegin(GL_TRIANGLES)
-        for face in faces:
-            for vertex_idx in face:
+        color_face = [(0.75+i/20, 0, 0) for i in range(6)]
+        for j in range(6):
+            glColor3f(color_face[j][0],color_face[j][1],color_face[j][2])
+            for vertex_idx in faces[j]:
                 glVertex3f(*vertices[vertex_idx])
         glEnd()
+        glBegin(GL_LINE_STRIP)
+        glColor(1, 1, 0)
+        glVertex3f(x, y, z)
+        glVertex3f(x + self.vel.x, y + self.vel.y, z + self.vel.z)
+        glEnd()
+        glBegin(GL_LINE_STRIP)
+        glColor(0, 1, 1)
+        glVertex3f(x, y, z)
+        glVertex3f(x + self.acc.x, y + self.acc.y, z + self.acc.z)
+        glEnd()
+
+        angularMomentum = vector_product(self.pos, self.vel);
+        if angularMomentum.sqrlength() == 0: return
+        eccentricityV = summa(number_product(1/(G * mass_planet), vector_product(self.vel, angularMomentum)), number_product(-1, self.pos.normalized()))
+        e = eccentricityV.length()
+        if e < 1:
+            dist = self.pos.length()
+            v2 = self.vel.length()**2
+            specificEnergy = v2 / 2 - G * mass_planet / dist
+            a = -G * mass_planet / (2 * specificEnergy)
+
+            glBegin(GL_LINE_LOOP)
+            glColor3f(1, 0.2, 0.2)
+            axisX = eccentricityV.normalized()
+            axisY = vector_product(angularMomentum.normalized(), axisX).normalized()
+            for i in range(1000):
+                theta = 2 * math.pi * i / 1000
+                r = a * (1 - e * e) / (1 + e * math.cos(theta))
+                x = r * math.cos(theta)
+                y = r * math.sin(theta)
+                pos = summa(number_product(x, axisX), number_product(y, axisY))
+                glVertex3f(pos.x / SCALE, pos.y / SCALE, pos.z / SCALE)
+            glEnd()
         glEnable(GL_LIGHTING)
 
 class SectorCamera:
@@ -654,7 +766,7 @@ class SectorCamera:
             
             glRotatef(self.rotation_x, 1, 0, 0)
             glRotatef(self.rotation_y, 0, 1, 0)
-            x, y, z = self.lander.get_cartesian_position(self.lander.heig/SCALE)
+            x, y, z = self.lander.pos.x/SCALE, self.lander.pos.y/SCALE, self.lander.pos.z/SCALE
             glTranslatef(-x, -y, -z)
         else:
             glTranslatef(0.0, 0.0, -self.distance)
@@ -671,6 +783,44 @@ class SectorCamera:
     def rotate(self, delta_x, delta_y):
         self.rotation_y += delta_x * 0.5
         self.rotation_x = max(-90, min(90, self.rotation_x + delta_y * 0.5))
+
+def rotate_lander(lander, angular_speed, dt, pitch_up, pitch_down, yaw_left, yaw_right):
+    v_i = Vector3(1, 0, 0)
+    v_j = Vector3(0, 1, 0)
+    v_k = Vector3(0, 0, 1)
+    if pitch_down:
+        lander.vectors_rotation[1] = rotate_around_axis(lander.vectors_rotation[1], lander.vectors_rotation[0], angular_speed * dt)
+        lander.vectors_rotation[2] = rotate_around_axis(lander.vectors_rotation[2], lander.vectors_rotation[0], angular_speed * dt)
+        lander.vectors_rotation[1] = lander.vectors_rotation[1].normalized()
+        lander.vectors_rotation[2] = lander.vectors_rotation[2].normalized()
+        lander.rotation = [angle(v_i, lander.vectors_rotation[0]),
+                           angle(v_j, lander.vectors_rotation[1]),
+                           angle(v_k, lander.vectors_rotation[2])]
+    if pitch_up:
+        lander.vectors_rotation[1] = rotate_around_axis(lander.vectors_rotation[1], lander.vectors_rotation[0], -angular_speed * dt)
+        lander.vectors_rotation[2] = rotate_around_axis(lander.vectors_rotation[2], lander.vectors_rotation[0], -angular_speed * dt)
+        lander.vectors_rotation[1] = lander.vectors_rotation[1].normalized()
+        lander.vectors_rotation[2] = lander.vectors_rotation[2].normalized()
+        lander.rotation = [angle(v_i, lander.vectors_rotation[0]),
+                           angle(v_j, lander.vectors_rotation[1]),
+                           angle(v_k, lander.vectors_rotation[2])]
+    if yaw_right:
+        lander.vectors_rotation[0] = rotate_around_axis(lander.vectors_rotation[0], lander.vectors_rotation[1], angular_speed * dt)
+        lander.vectors_rotation[2] = rotate_around_axis(lander.vectors_rotation[2], lander.vectors_rotation[1], angular_speed * dt)
+        lander.vectors_rotation[0] = lander.vectors_rotation[0].normalized()
+        lander.vectors_rotation[2] = lander.vectors_rotation[2].normalized()
+        lander.rotation = [angle(v_i, lander.vectors_rotation[0]),
+                           angle(v_j, lander.vectors_rotation[1]),
+                           angle(v_k, lander.vectors_rotation[2])]
+    if yaw_left:
+        lander.vectors_rotation[0] = rotate_around_axis(lander.vectors_rotation[0], lander.vectors_rotation[1], -angular_speed * dt)
+        lander.vectors_rotation[2] = rotate_around_axis(lander.vectors_rotation[2], lander.vectors_rotation[1], -angular_speed * dt)
+        lander.vectors_rotation[0] = lander.vectors_rotation[0].normalized()
+        lander.vectors_rotation[2] = lander.vectors_rotation[2].normalized()
+        lander.rotation = [angle(v_i, lander.vectors_rotation[0]),
+                           angle(v_j, lander.vectors_rotation[1]),
+                           angle(v_k, lander.vectors_rotation[2])]
+    return lander
 
 def draw_coordinate_frame(axes_cashe, e_rad, p_rad, n=100):
     if len(axes_cashe) != 0:
@@ -720,6 +870,19 @@ def draw_coordinate_frame(axes_cashe, e_rad, p_rad, n=100):
         glEnable(GL_LIGHTING)
         axes_cashe.clear()
         axes_cashe.extend(vertexs)
+
+def draw_target_ray(pos, target_pos):
+    target_dir = target_pos.normalized()
+    ray_length = pos.length()
+    end_point = number_product(ray_length, target_dir)
+    glDisable(GL_LIGHTING)
+    glLineWidth(2.0)
+    glBegin(GL_LINES)
+    glColor3f(1.0, 1.0, 0.0)
+    glVertex3f(0.0, 0.0, 0.0)
+    glVertex3f(end_point.x / SCALE, end_point.y / SCALE, end_point.z / SCALE)
+    glEnd()
+    glEnable(GL_LIGHTING)
 
 def list_saved_areas():
     bin_files = [f for f in os.listdir() if f.endswith('.bin')]
@@ -825,70 +988,57 @@ def show_lander_info(lander):
     return True
 
 def create_lander_standard(planet):
-    """Создание лендера в стандартном режиме"""
-    print("\n=== Создание лендера в стандартном режиме ===")
-    
-    # Стандартные параметры
-    lon, lat = 0, 0  # старт в центре
-    heig = planet.equ_radius + 20000
-    v_lon, v_lat, v_heig = 0.001, 0, 0 
-    size = 0.05
-    
-    lon_rad = math.radians(lon)
-    lat_rad = math.radians(lat)
-    
-    surface_height = planet.sectors[0][0].noise_surface(0, 0)
-    heig_planet = surface_height
-    
-    new_lander = Lander(lon_rad, lat_rad, heig, v_lon, v_lat, v_heig, size, heig_planet)
-    
-    print(f"Создан лендер в стандартном режиме:")
-    print(f"  Положение: долгота={lon}°, широта={lat}°")
-    print(f"  Высота: {heig:.2f}")
-    print(f"  Скорость: по долготе={v_lon}, по широте={v_lat}, вертикальная={v_heig}")
-    print(f"  Размер: {size}")
+    lon, lat = 0, 0
+    heig = planet.equ_radius + 40000
+    modul = math.sqrt(G * planet.mass / heig)
+    v_rot = modul - planet.angular_velocity * heig
+    velocity = Vector3(0, 0, v_rot)
+    massa = 1750
+    mass_propellant = 1750 - 615
+    size = 0.1
+    heig_planet = 0
+    new_lander = Lander(lon, lat, heig, [0,0,0], velocity, massa, mass_propellant, 4800, size, heig_planet)
     
     return new_lander
 
 def create_lander_custom(planet):
-    """Создание лендера с ручным вводом параметров"""
     print("\n=== Создание лендера с ручным вводом параметров ===")
-    print("Введите значения (оставьте пустым для значения по умолчанию):")
-    
+    print("Введите значения:")
     try:
         lon_lat_heig = input("Долгота, широта, высота (над поверхностью): ")
         if lon_lat_heig.strip():
             lon, lat, heig = map(float, lon_lat_heig.split())
         else:
-            lon, lat, heig = 0, 0, planet.equ_radius + 2
-        heig += planet.equ_radius
-        v_lon_lat_heig = input("Скорость по долготе, широте, высоте: ")
-        if v_lon_lat_heig.strip():
-            v_lon, v_lat, v_heig = map(float, v_lon_lat_heig.split())
-        else:
-            v_lon, v_lat, v_heig = 0.01, 0, 0
-        
-        size = input("Размер лендера [0.1]: ")
-        size = float(size) if size.strip() else 0.1
-        
+            lon, lat, heig = 0, 0, 40000
         lon_rad = math.radians(lon)
         lat_rad = math.radians(lat)
-        
-        # Получаем высоту поверхности в указанной точке
         surface_height = planet.sectors[0][0].noise_surface(lon_rad, lat_rad)
+        heig = surface_height + heig
+        modul = math.sqrt(G * planet.mass/heig)
+        x, y, z = get_cartesian_position(lon_rad, lat_rad, heig)
+        r = Vector3(x, y, z)
+        east = vector_product(r, Vector3(0, 1, 0))
+        if east.sqrlength() < 1e-12:
+            east = Vector3(1, 0, 0)
+        else:
+            east = east.normalized()
+        velocity = number_product(modul, east)
+        massa = input("Полная и сухая масса аппарата: ")
+        if massa.strip():
+            mass, mass_s = map(float, massa.split())
+        else:
+            mass, mass_s = 1750.0, 615.0
+        size = input("Размер лендера [0.1]: ")
+        size = float(size) if size.strip() else 0.1
         heig_planet = surface_height
-        
-        new_lander = Lander(lon_rad, lat_rad, heig, v_lon, v_lat, v_heig, size, heig_planet)
-        
+        new_lander = Lander(lon_rad, lat_rad, heig, [0,0,0], velocity, mass, mass-mass_s, 4800, size, heig_planet)
         print("Новый лендер создан!")
-        return new_lander
-        
+        return new_lander 
     except ValueError as e:
         print(f"Ошибка ввода: {e}")
         return None
 
 def planet_menu(planet, lander, camera):
-    """Меню управления планетой"""
     while True:
         print("\n=== Меню управления планетой ===")
         print("1. Показать текущие параметры планеты")
@@ -919,14 +1069,18 @@ def planet_menu(planet, lander, camera):
                 Long, Lat = 0, 0
             
             ERadiu = input("Экваториальный радиус Планеты: ")
-            ERadiu = int(ERadiu) if ERadiu.strip() else 7
+            ERadiu = int(ERadiu) if ERadiu.strip() else 1738140
             PRadiu = input("Полярный радиус Планеты: ")
-            PRadiu = int(PRadiu) if PRadiu.strip() else 6.6
+            PRadiu = int(PRadiu) if PRadiu.strip() else 1735970
             
             Details = input("Детализация [8]: ")
-            Details = int(Details) if Details.strip() else 8
+            Details = int(Details) if Details.strip() else 24
+            massa = input("Масса: ")
+            massa = float(massa) if massa.strip() else 1e22
+            a_v = input("Угловая скорость вращения: ")
+            a_v = int(a_v) if a_v.strip() else 2.6617e-10
             
-            new_planet = Planet(Radius_sectors, Long, Lat, ERadiu, PRadiu, Details)
+            new_planet = Planet(Radius_sectors, Long, Lat, ERadiu, PRadiu, Details, massa, a_v)
             
             new_planet.gradient_settings = planet.gradient_settings.copy()
             
@@ -943,18 +1097,15 @@ def planet_menu(planet, lander, camera):
             
             camera = SectorCamera(planet, lander)
             print("Новая планета создана!")
-            break
-            
+            break   
         elif choice == '3':
-            break
-            
+            break   
         else:
             print("Неверный выбор. Попробуйте снова.")
     
     return planet, lander, camera
 
 def gradient_menu(planet):
-    """Меню настройки градиента"""
     while True:
         print("\n=== Меню настройки градиента ===")
         print("1. Показать текущие настройки градиента")
@@ -979,7 +1130,6 @@ def gradient_menu(planet):
     return planet
 
 def lander_menu(planet, lander, camera):
-    """Меню управления лендером"""
     while True:
         print("\n=== Меню управления лендером ===")
         print("1. Показать информацию о лендере")
@@ -1031,15 +1181,117 @@ def lander_menu(planet, lander, camera):
     
     return planet, lander, camera
 
+def control_functions(lander, planet, camera, manual_operation, data):
+    parts = data.split()
+    try:
+        if parts[0] == "s_l":
+            if lander and lander.exists:
+                print("Сначала удалите существующий лендер!")
+            else:
+                new_lander = create_lander_standard(planet)
+                if new_lander:
+                    lander = new_lander
+                    camera.set_lander(lander)
+        elif parts[0] == "d_l":
+            if lander and lander.exists:
+                lander.exists = False
+                print("Лендер удален")
+                lander = None
+                camera.set_lander(None)
+            else:
+                print("Лендер не существует")
+        elif parts[0] == "m_o":
+            manual_operation = not manual_operation
+    except: print("G")
+    return lander, camera, manual_operation
+
+def get_naklon_dv(r, v, r_target):
+    n_orbit = vector_product(r, v).normalized()
+    e_target = r_target.normalized()
+    abs_cos_phi = abs(scalar_product(n_orbit, e_target))
+    dangle = math.pi/2 - math.acos(abs_cos_phi)
+    pr_target_on_n = number_product(scalar_product(n_orbit, e_target), n_orbit)
+    e_apsid = summa(e_target, number_product(-1, pr_target_on_n)).normalized()
+    e_nodes = vector_product(e_target, e_apsid).normalized()
+    pr1, pr2 = scalar_product(e_nodes, v), scalar_product(number_product(-1, e_nodes), v)
+    if pr1 > 0:
+        return (dangle, e_nodes)
+    elif pr1 == 0 or pr2 > 0:
+        return (dangle, number_product(-1, e_nodes))
+def predict_node_time(lander, planet, r_target, t0, max_time, dt=1.0, threshold=0.99):
+    global FIXED_NODE
+    r_inert = lander.pos
+    v_inert = lander.vel
+
+    FIXED_NODE = get_naklon_dv(r_inert, v_inert, r_target)
+    if FIXED_NODE[1].sqrlength() < 1e-12:
+        return None, 0
+    best_node = FIXED_NODE[1]
+
+    def step(p, v, dt):
+        massa = lander.mass
+        Force = number_product(- G * planet.mass * massa / p.length()**3 , p)
+        omega = planet.angular_velocity
+        centrifugal = Vector3(omega**2 * p.x, 0, omega**2 * p.z)
+        centrifugal = number_product(massa, centrifugal)
+        v_omega = Vector3(0, omega, 0)
+        coriolis = vector_product(v_omega, v)
+        coriolis = number_product(-2 * massa, coriolis)
+        Force = summa(Force, centrifugal)
+        Force = summa(Force, coriolis)
+        acc = number_product(1/massa, Force)
+        v_new = summa(v, number_product(dt, acc))
+        p_new = summa(p, number_product(dt, v_new))
+        return  p_new, v_new
+
+    r_dir = r_inert.normalized()
+    dot = abs(scalar_product(r_dir, best_node))
+    inside = dot > threshold
+    t_pred = 0.0
+    pos, vel = r_inert, v_inert
+
+    while inside and t_pred < max_time:
+        pos, vel = step(pos, vel, dt)
+        t_pred += dt
+        r_dir = pos.normalized()
+        dot = abs(scalar_product(r_dir, best_node))
+        inside = dot > threshold
+
+    while t_pred < max_time:
+        pos, vel = step(pos, vel, dt)
+        t_pred += dt
+        r_dir = pos.normalized()
+        dot = abs(scalar_product(r_dir, best_node))
+        if dot > threshold:
+            dv = 2 * v_inert.length() * math.sin(FIXED_NODE[0]/2)
+            return t_pred, FIXED_NODE[0], dv
+
+    print(f"Узел не найден за {max_time:.1f} c")
+    return None
+
+class Manevr:
+    def __init__(self, thrust, duration, remain_time):
+        self.thrust = thrust
+        self.duration = duration
+        self.remain_time = remain_time
+        self.is_work = False
+FIXED_NODE = None
 def main():
     pygame.init()
     display = (800, 600)
     pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
     pygame.display.set_caption("LandingSim")
-    
-    planet = Planet(1, 0, 0, 1738140, 1735970, 128)
+    planet = Planet(1, 0, 0, 1738140, 1735970, 64, 7.36e22, 2.6617e-10)
     
     updating_sectors = False
+    manual_operation = True
+    pitch_up = False
+    pitch_down = False
+    yaw_left = False
+    yaw_right = False
+    is_thrusting = False
+    is_pause = True
+    is_calculate = False
 
     lander = None
     camera = SectorCamera(planet, lander)
@@ -1051,29 +1303,32 @@ def main():
     clock = pygame.time.Clock()
     show_axes = True
     axes_cashe = []
+    Time = 0
     render_mode = 'polygons'
 
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket.bind(('localhost', 5000))
+    server_socket.listen(1)
+    server_socket.setblocking(False)
+    clients = []  
     
     print("=== LandingSim ===")
     print("Управление:")
-    print("W - переключить режим (полигоны/линии/квадраты)")
-    print("A - показать/скрыть оси координат")
+    print("R - переключить режим (полигоны/линии/квадраты)")
+    print("H - показать/скрыть оси координат")
     print("C - меню управления планетой")
     print("G - меню настройки градиента")
-    print("R - Переключить обновление секторов")
-    print("F - меню управления лендером")
-    print("SPACE - переключить привязку камеры к лендеру")
+    print("U - Переключить обновление секторов")
+    print("L - меню управления лендером")
+    print("SPACE - Pause")
     print("Колесо мыши - приближение/отдаление")
-    print("ЛКМ + движение - вращение камеры")
-    print(f"Текущий режим: {render_mode.upper()}")
-    print("\nЦвета наклона рельефа:")
-    print("Зелёный: 0-5° (ровный)")
-    print("Жёлтый: 5-15° (пологий)")
-    print("Оранжевый: 15-30° (средний)")
-    print("Красный: 30°+ (крутой)")
     
     while True:
-        dt = clock.tick(60) / 1000.0
+        if not is_pause:
+            dt = 0.05
+            Time += dt
+        else: dt = 0
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
@@ -1082,7 +1337,7 @@ def main():
                 if event.key == pygame.K_ESCAPE:
                     pygame.quit()
                     return
-                elif event.key == pygame.K_w:
+                elif event.key == pygame.K_r:
                     if render_mode == 'polygons':
                         render_mode = 'wireframe'
                     elif render_mode == 'wireframe':
@@ -1091,7 +1346,6 @@ def main():
                         render_mode = 'mono'
                     else:
                         render_mode = 'polygons'
-                    
                     mode_names = {
                         'polygons': 'ПОЛИГОНЫ',
                         'wireframe': 'ЛИНИИ',
@@ -1099,26 +1353,60 @@ def main():
                         'mono': 'СЕРЫЙ'
                     }
                     print(f"Режим изменен на: {mode_names[render_mode]}")
-                elif event.key == pygame.K_a:
+                elif event.key == pygame.K_h:
                     show_axes = not show_axes
-                    print(len(axes_cashe))
                     print(f"Оси координат: {'ВКЛ' if show_axes else 'ВЫКЛ'}")
-                elif event.key == pygame.K_SPACE:
+                elif event.key == pygame.K_f:
                     camera.toggle_follow_lander()
                 elif event.key == pygame.K_c:
                     planet, lander, camera = planet_menu(planet, lander, camera)
                 elif event.key == pygame.K_g:
                     planet = gradient_menu(planet)
-                elif event.key == pygame.K_f:
+                elif event.key == pygame.K_l:
                     planet, lander, camera = lander_menu(planet, lander, camera)
-                elif event.key == pygame.K_r:
+                elif event.key == pygame.K_u:
                     updating_sectors = not updating_sectors
+                elif event.key == pygame.K_SPACE:
+                    is_pause = not is_pause
+                if manual_operation == True and not is_pause:
+                    if event.key == pygame.K_w:
+                        pitch_up = True
+                    elif event.key == pygame.K_s:
+                        pitch_down = True
+                    elif event.key == pygame.K_a:
+                        yaw_left = True
+                    elif event.key == pygame.K_d:
+                        yaw_right = True
+                    elif event.key == pygame.K_t:
+                        is_thrusting = True
+                    elif event.key == pygame.K_k:
+                        if lander and lander.exists:
+                            if not is_calculate: 
+                                is_calculate = True
+                                sector_0 = planet.sectors[0][0]
+                                xt, yt, zt = sector_0.spherical_to_cartesian(sector_0.stones[0][0], sector_0.stones[0][1], sector_0.stones[0][2])
+                                time_usel, dangle, dv = predict_node_time(lander, planet, Vector3(xt,yt,zt), Time, int(2*math.pi*lander.pos.length()/lander.vel.length()))
+                                print(f"t0={Time:.1f} time_to_node={time_usel:.1f} angle={math.degrees(dangle):.1f} dv={dv:.1f}")
+                                is_calculate = False
             
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 4: 
                     camera.zoom(-1.0)
                 elif event.button == 5: 
                     camera.zoom(1.0)
+            elif event.type == pygame.KEYUP:
+                if manual_operation == True:
+                    if event.key == pygame.K_w:
+                        pitch_up = False
+                    elif event.key == pygame.K_s:
+                        pitch_down = False
+                    elif event.key == pygame.K_a:
+                        yaw_left = False
+                    elif event.key == pygame.K_d:
+                        yaw_right = False
+                    elif event.key == pygame.K_t:
+                        is_thrusting = False
+                        lander.thrust_force = Vector3(0,0,0)
         
         if pygame.mouse.get_pressed()[0]:
             rel_x, rel_y = pygame.mouse.get_rel()
@@ -1126,11 +1414,52 @@ def main():
         else:
             pygame.mouse.get_rel()
         
-        if lander and lander.exists:
-            lander.update_velocity(dt)
-            surface_height = planet.sectors[0][0].noise_surface(lander.lon, lander.lat)
-            lander.update_height(surface_height)
+        try:
+            client_sock, addr = server_socket.accept()
+            client_sock.setblocking(False)
+            clients.append(client_sock)
+            print(f"Подключён клиент {addr}")
+        except BlockingIOError:
+            pass
+
+        for sock in clients[:]:
+            try:
+                data = sock.recv(1024).decode().strip()
+                if data:
+                    lander, camera, manual_operation = control_functions(lander, planet, camera, manual_operation, data)
+            except BlockingIOError:
+                continue
+            except ConnectionResetError:
+                print("Клиент отключился")
+                sock.close()
+                clients.remove(sock)
         
+        vel_text = 0
+        heig_text = 0
+        if lander and lander.exists and not is_pause:
+            latitude_l = math.asin(lander.pos.z/lander.pos.length())
+            if manual_operation:
+                lander = rotate_lander(lander, 1, dt, pitch_up, pitch_down, yaw_left, yaw_right)
+            lander.update_physic(planet, is_thrusting, dt)
+            surface_height = sector_0.noise_surface(math.atan2(lander.pos.y, lander.pos.x), latitude_l)
+            lander.update_height(surface_height)
+            vel_text = lander.vel.length()
+            heig_text = lander.pos.length() - get_radius(planet.equ_radius, planet.pol_radius, latitude_l)
+            if clients:
+                for sock in clients:
+                    try:
+                        sock.sendall(bytes(f"v{vel_text:.2f} h{heig_text:.2f} f{100*lander.mass_propell/lander.mass_propell_max:.0f}", "utf-8"))
+                    except:
+                        pass
+        else: 
+            vel_text = 0
+            heig_text = 0
+            if clients:
+                for sock in clients:
+                    try:
+                        sock.sendall(bytes(f"v***** h***** f*****", "utf-8"))
+                    except:
+                        pass
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         
         camera.update_camera_position()
@@ -1138,14 +1467,16 @@ def main():
         for i in range(len(planet.sectors)):
             for j in range(len(planet.sectors[i])):
                 planet.sectors[i][j].draw_optimized(mode=render_mode)
-                planet.sectors[i][j].draw_stones()
+                planet.sectors[i][j].draw_stones(camera)
         
-        # Отрисовка лендера
         if lander and lander.exists:
-            lander.draw()
+            lander.draw(planet.mass)
+            sector_0 = planet.sectors[0][0]
+            xt, yt, zt = sector_0.spherical_to_cartesian(sector_0.stones[0][0], sector_0.stones[0][1], sector_0.stones[0][2])
+            draw_target_ray(lander.pos, Vector3(xt, yt, zt))
         
         # Обновление секторов при движении лендера
-        if lander and lander.exists and updating_sectors:
+        if lander and lander.exists and updating_sectors and not is_pause:
             ceil_lon = math.ceil(math.degrees(lander.lon))
             ceil_lat = math.ceil(math.degrees(lander.lat))
             delta_lon = ceil_lon - planet.longitude
@@ -1155,7 +1486,7 @@ def main():
                 planet.latitude = ceil_lat
                 planet = update_sectors(planet, delta_lon, delta_lat)
         if show_axes:
-            draw_coordinate_frame(axes_cashe, planet.equ_radius/SCALE, planet.pol_radius/SCALE)
+            draw_coordinate_frame(axes_cashe, planet.equ_radius/SCALE, planet.pol_radius/SCALE, 100)
         
         mode_names = {
             'polygons': 'ПОЛИГОНЫ',
@@ -1163,7 +1494,7 @@ def main():
             'squares': 'КВАДРАТЫ',
             'mono': 'СЕРЫЙ'
         }
-        pygame.display.set_caption(f"LandingSim - {clock.get_fps()}")
+        pygame.display.set_caption(f"LandingSim - {clock.get_fps():.2f} - Time: {Time:.1f} c - Vel: {vel_text:.0f} м/c - Heig: {heig_text:.0f} м")
         pygame.display.flip()
 
 if __name__ == "__main__":
